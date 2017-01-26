@@ -3,7 +3,10 @@ package org.ethereum.mine;
 import org.apache.commons.lang3.tuple.Pair;
 import org.ethereum.crypto.HashUtil;
 import org.spongycastle.util.Arrays;
+import sun.misc.Unsafe;
+import sun.nio.ch.DirectBuffer;
 
+import java.lang.reflect.Field;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -129,20 +132,33 @@ public class EthashAlgo {
 
     public ByteBuffer calcDataset(long fullSize, int[] cache) {
         ByteBuffer buf = ByteBuffer.allocateDirect((int) fullSize);
-        IntBuffer intBuf = buf.asIntBuffer();
+        long addr = ((DirectBuffer) buf).address();
+        Unsafe unsafe = getUnsafe();
         int hashesCount = (int) (fullSize / params.getHASH_BYTES());
-//        int[] ret = new int[hashesCount * (params.getHASH_BYTES() / 4)];
         for (int i = 0; i < hashesCount; i++) {
             int[] item = calcDatasetItem(cache, i);
-            intBuf.position(i * (params.getHASH_BYTES() / 4));
-            intBuf.put(item, 0, item.length);
-//            arraycopy(item, 0, ret, i * (params.getHASH_BYTES() / 4), item.length);
+            long pos = addr + i * (params.getHASH_BYTES());
+            for (int i1 = 0; i1 < item.length; i1++) {
+                unsafe.putInt(pos + (i1 << 2), item[i1]);
+            }
         }
         return buf;
     }
 
+    private static Unsafe getUnsafe() {
+        try {
+
+            Field singleoneInstanceField = Unsafe.class.getDeclaredField("theUnsafe");
+            singleoneInstanceField.setAccessible(true);
+            return (Unsafe) singleoneInstanceField.get(null);
+
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
     public Pair<byte[], byte[]> hashimoto(byte[] blockHeaderTruncHash, byte[] nonce, long fullSize,
-                                          int[] cache, IntBuffer fullDag, boolean full) {
+                                          int[] cache, long fullDagAddr, boolean full) {
+        Unsafe unsafe = getUnsafe();
         if (nonce.length != 8) throw new RuntimeException("nonce.length != 8");
 
         int hashWords = params.getHASH_BYTES() / 4;
@@ -155,23 +171,31 @@ public class EthashAlgo {
         }
 
         int numFullPages = (int) (fullSize / params.getMIX_BYTES());
-        for (int i = 0; i < params.getACCESSES(); i++) {
-            int p = remainderUnsigned(fnv(i ^ s[0], mix[i % w]), numFullPages);
-            int[] newData = new int[mix.length];
-            int off = p * mixhashes;
-            for (int j = 0; j < mixhashes; j++) {
-                int itemIdx = off + j;
-                if (!full) {
+        if (!full) {
+            for (int i = 0; i < params.getACCESSES(); i++) {
+                int p = remainderUnsigned(fnv(i ^ s[0], mix[i % w]), numFullPages);
+                int[] newData = new int[mix.length];
+                int off = p * mixhashes;
+                for (int j = 0; j < mixhashes; j++) {
+                    int itemIdx = off + j;
+
                     int[] lookup1 = calcDatasetItem(cache, itemIdx);
                     arraycopy(lookup1, 0, newData, j * lookup1.length, lookup1.length);
-                } else {
-                    fullDag.position(itemIdx * hashWords);
-                    fullDag.get(newData, j * hashWords, hashWords);
-//                    arraycopy(cacheOrDataset, itemIdx * hashWords, newData, j * hashWords, hashWords);
+                }
+                for (int i1 = 0; i1 < mix.length; i1++) {
+                    mix[i1] = fnv(mix[i1], newData[i1]);
                 }
             }
-            for (int i1 = 0; i1 < mix.length; i1++) {
-                mix[i1] = fnv(mix[i1], newData[i1]);
+        } else {
+            int s0 = s[0];
+            for (int i = 0; i < 64; i++) {
+                int p = remainderUnsigned(fnv(i ^ s0, mix[i & 0x1F]), numFullPages);
+                int off = p << 5;
+
+                long addr = fullDagAddr + (off << 2);
+                for (int i1 = 0; i1 < 32; i1++, addr += 4) {
+                    mix[i1] = fnv(mix[i1], unsafe.getInt(addr));
+                }
             }
         }
 
@@ -188,19 +212,19 @@ public class EthashAlgo {
 
     public Pair<byte[], byte[]> hashimotoLight(long fullSize, final int[] cache, byte[] blockHeaderTruncHash,
                                                byte[]  nonce) {
-        return hashimoto(blockHeaderTruncHash, nonce, fullSize, cache, null, false);
+        return hashimoto(blockHeaderTruncHash, nonce, fullSize, cache, 0, false);
     }
 
-    public Pair<byte[], byte[]> hashimotoFull(long fullSize, final IntBuffer dataset, byte[] blockHeaderTruncHash,
+    public Pair<byte[], byte[]> hashimotoFull(long fullSize, final long dataset, byte[] blockHeaderTruncHash,
                                               byte[]  nonce) {
         return hashimoto(blockHeaderTruncHash, nonce, fullSize, null, dataset, true);
     }
 
-    public long mine(long fullSize, final IntBuffer dataset, byte[] blockHeaderTruncHash, long difficulty) {
+    public long mine(long fullSize, final long dataset, byte[] blockHeaderTruncHash, long difficulty) {
         return mine(fullSize, dataset, blockHeaderTruncHash, difficulty, new Random().nextLong());
     }
 
-    public long mine(long fullSize, final IntBuffer dataset, byte[] blockHeaderTruncHash, long difficulty, long startNonce) {
+    public long mine(long fullSize, final long dataset, byte[] blockHeaderTruncHash, long difficulty, long startNonce) {
         long nonce = startNonce;
         BigInteger target = valueOf(2).pow(256).divide(valueOf(difficulty));
         long start = System.nanoTime();

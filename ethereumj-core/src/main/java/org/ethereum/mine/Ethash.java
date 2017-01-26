@@ -12,6 +12,7 @@ import org.ethereum.util.ByteUtil;
 import org.ethereum.util.FastByteComparisons;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import sun.nio.ch.DirectBuffer;
 
 import java.io.*;
 import java.nio.ByteBuffer;
@@ -132,18 +133,6 @@ public class Ethash {
                 } catch (IOException e) {
                     throw new RuntimeException(e);
                 }
-//                try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(file))) {
-//                    logger.info("Loading dataset from " + file.getAbsolutePath());
-//                    long bNum = ois.readLong();
-//                    if (bNum == blockNumber) {
-//                        fullData = (int[]) ois.readObject();
-//                        logger.info("Dataset loaded.");
-//                    } else {
-//                        logger.info("Dataset block number miss: " + bNum + " != " + blockNumber);
-//                    }
-//                } catch (IOException | ClassNotFoundException e) {
-//                    throw new RuntimeException(e);
-//                }
             }
 
             if (fullData == null){
@@ -169,15 +158,6 @@ public class Ethash {
                     } catch (IOException e) {
                         throw new RuntimeException(e);
                     }
-
-
-//                    try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(file))) {
-//                        logger.info("Writing dataset to " + file.getAbsolutePath());
-//                        oos.writeLong(blockNumber);
-//                        oos.writeObject(fullData);
-//                    } catch (IOException e) {
-//                        throw new RuntimeException(e);
-//                    }
                 }
             }
         }
@@ -209,7 +189,7 @@ public class Ethash {
      *  See {@link EthashAlgo#hashimotoFull}
      */
     public Pair<byte[], byte[]> hashimotoFull(BlockHeader header, long nonce) {
-        return getEthashAlgo().hashimotoFull(getFullSize(), getFullDataset().asIntBuffer(), sha3(header.getEncodedWithoutNonce()),
+        return getEthashAlgo().hashimotoFull(getFullSize(), ((DirectBuffer)getFullDataset()).address(), sha3(header.getEncodedWithoutNonce()),
                 longToBytes(nonce));
     }
 
@@ -234,7 +214,7 @@ public class Ethash {
             @Override
             public MiningResult call() throws Exception {
                 long threadStartNonce = taskStartNonce.getAndAdd(0x100000000L);
-                long nonce = getEthashAlgo().mine(getFullSize(), getFullDataset().asIntBuffer(),
+                long nonce = getEthashAlgo().mine(getFullSize(), ((DirectBuffer)getFullDataset()).address(),
                         sha3(block.getHeader().getEncodedWithoutNonce()),
                         ByteUtil.byteArrayToLong(block.getHeader().getDifficulty()), threadStartNonce);
                 final Pair<byte[], byte[]> pair = hashimotoLight(block.getHeader(), nonce);
