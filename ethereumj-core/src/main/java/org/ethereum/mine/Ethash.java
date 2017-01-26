@@ -14,6 +14,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.*;
+import java.nio.ByteBuffer;
+import java.nio.IntBuffer;
+import java.nio.channels.FileChannel;
 import java.util.Random;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
@@ -56,7 +59,7 @@ public class Ethash {
 
     private long blockNumber;
     private int[] cacheLight = null;
-    private int[] fullData = null;
+    private ByteBuffer fullData = null;
     private SystemProperties config;
     private long startNonce = -1;
 
@@ -107,42 +110,78 @@ public class Ethash {
         return cacheLight;
     }
 
-    public synchronized int[] getFullDataset() {
+    public synchronized ByteBuffer getFullDataset() {
         if (fullData == null) {
             File file = new File(config.databaseDir(), "mine-dag.dat");
             if (fileCacheEnabled && file.canRead()) {
-                try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(file))) {
+                try (FileInputStream out = new FileInputStream(file)) {
                     logger.info("Loading dataset from " + file.getAbsolutePath());
-                    long bNum = ois.readLong();
+                    FileChannel fileC = out.getChannel();
+                    ByteBuffer headerBytes = ByteBuffer.allocate(4 * 2);
+                    IntBuffer header = headerBytes.asIntBuffer();
+                    fileC.read(headerBytes);
+                    int bNum = header.get();
+                    int size = header.get();
                     if (bNum == blockNumber) {
-                        fullData = (int[]) ois.readObject();
+                        fullData = ByteBuffer.allocateDirect(size);
+                        fileC.read(fullData);
                         logger.info("Dataset loaded.");
                     } else {
                         logger.info("Dataset block number miss: " + bNum + " != " + blockNumber);
                     }
-                } catch (IOException | ClassNotFoundException e) {
+                } catch (IOException e) {
                     throw new RuntimeException(e);
                 }
+//                try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(file))) {
+//                    logger.info("Loading dataset from " + file.getAbsolutePath());
+//                    long bNum = ois.readLong();
+//                    if (bNum == blockNumber) {
+//                        fullData = (int[]) ois.readObject();
+//                        logger.info("Dataset loaded.");
+//                    } else {
+//                        logger.info("Dataset block number miss: " + bNum + " != " + blockNumber);
+//                    }
+//                } catch (IOException | ClassNotFoundException e) {
+//                    throw new RuntimeException(e);
+//                }
             }
 
             if (fullData == null){
 
                 logger.info("Calculating full dataset...");
                 fullData = getEthashAlgo().calcDataset(getFullSize(), getCacheLight());
+
                 logger.info("Full dataset calculated.");
 
                 if (fileCacheEnabled) {
                     file.getParentFile().mkdirs();
-                    try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(file))) {
+
+                    try (FileOutputStream out = new FileOutputStream(file)) {
                         logger.info("Writing dataset to " + file.getAbsolutePath());
-                        oos.writeLong(blockNumber);
-                        oos.writeObject(fullData);
+                        FileChannel fileC = out.getChannel();
+                        ByteBuffer headerBytes = ByteBuffer.allocate(4 * 2);
+                        IntBuffer header = headerBytes.asIntBuffer();
+                        header.put((int) blockNumber);
+                        header.put(fullData.capacity());
+                        fileC.write(headerBytes);
+                        fullData.position(0);
+                        fileC.write(fullData);
                     } catch (IOException e) {
                         throw new RuntimeException(e);
                     }
+
+
+//                    try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(file))) {
+//                        logger.info("Writing dataset to " + file.getAbsolutePath());
+//                        oos.writeLong(blockNumber);
+//                        oos.writeObject(fullData);
+//                    } catch (IOException e) {
+//                        throw new RuntimeException(e);
+//                    }
                 }
             }
         }
+        fullData.position(0);
         return fullData;
     }
 
@@ -170,7 +209,7 @@ public class Ethash {
      *  See {@link EthashAlgo#hashimotoFull}
      */
     public Pair<byte[], byte[]> hashimotoFull(BlockHeader header, long nonce) {
-        return getEthashAlgo().hashimotoFull(getFullSize(), getFullDataset(), sha3(header.getEncodedWithoutNonce()),
+        return getEthashAlgo().hashimotoFull(getFullSize(), getFullDataset().asIntBuffer(), sha3(header.getEncodedWithoutNonce()),
                 longToBytes(nonce));
     }
 
@@ -195,7 +234,7 @@ public class Ethash {
             @Override
             public MiningResult call() throws Exception {
                 long threadStartNonce = taskStartNonce.getAndAdd(0x100000000L);
-                long nonce = getEthashAlgo().mine(getFullSize(), getFullDataset(),
+                long nonce = getEthashAlgo().mine(getFullSize(), getFullDataset().asIntBuffer(),
                         sha3(block.getHeader().getEncodedWithoutNonce()),
                         ByteUtil.byteArrayToLong(block.getHeader().getDifficulty()), threadStartNonce);
                 final Pair<byte[], byte[]> pair = hashimotoLight(block.getHeader(), nonce);

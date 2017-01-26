@@ -309,7 +309,7 @@ public class EthashTest {
         long s = System.currentTimeMillis();
         for (int i = 0; i < 100; i++) {
             b.setExtraData(intToBytes(i));
-            ethash.mine(b, 8).get();
+            ethash.mine(b, 2).get();
             if (!ethash.validate(b.getHeader())) {
                 throw new RuntimeException("Not validated: " + b);
             }

@@ -7,9 +7,11 @@ import org.spongycastle.util.Arrays;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.IntBuffer;
 import java.util.Random;
 
 import static java.lang.System.arraycopy;
+import static java.lang.System.in;
 import static java.math.BigInteger.valueOf;
 import static org.ethereum.crypto.HashUtil.sha3;
 import static org.ethereum.util.ByteUtil.*;
@@ -125,18 +127,22 @@ public class EthashAlgo {
         return sha512(mix, false);
     }
 
-    public int[] calcDataset(long fullSize, int[] cache) {
+    public ByteBuffer calcDataset(long fullSize, int[] cache) {
+        ByteBuffer buf = ByteBuffer.allocateDirect((int) fullSize);
+        IntBuffer intBuf = buf.asIntBuffer();
         int hashesCount = (int) (fullSize / params.getHASH_BYTES());
-        int[] ret = new int[hashesCount * (params.getHASH_BYTES() / 4)];
+//        int[] ret = new int[hashesCount * (params.getHASH_BYTES() / 4)];
         for (int i = 0; i < hashesCount; i++) {
             int[] item = calcDatasetItem(cache, i);
-            arraycopy(item, 0, ret, i * (params.getHASH_BYTES() / 4), item.length);
+            intBuf.position(i * (params.getHASH_BYTES() / 4));
+            intBuf.put(item, 0, item.length);
+//            arraycopy(item, 0, ret, i * (params.getHASH_BYTES() / 4), item.length);
         }
-        return ret;
+        return buf;
     }
 
     public Pair<byte[], byte[]> hashimoto(byte[] blockHeaderTruncHash, byte[] nonce, long fullSize,
-                                          int[] cacheOrDataset, boolean full) {
+                                          int[] cache, IntBuffer fullDag, boolean full) {
         if (nonce.length != 8) throw new RuntimeException("nonce.length != 8");
 
         int hashWords = params.getHASH_BYTES() / 4;
@@ -156,10 +162,12 @@ public class EthashAlgo {
             for (int j = 0; j < mixhashes; j++) {
                 int itemIdx = off + j;
                 if (!full) {
-                    int[] lookup1 = calcDatasetItem(cacheOrDataset, itemIdx);
+                    int[] lookup1 = calcDatasetItem(cache, itemIdx);
                     arraycopy(lookup1, 0, newData, j * lookup1.length, lookup1.length);
                 } else {
-                    arraycopy(cacheOrDataset, itemIdx * hashWords, newData, j * hashWords, hashWords);
+                    fullDag.position(itemIdx * hashWords);
+                    fullDag.get(newData, j * hashWords, hashWords);
+//                    arraycopy(cacheOrDataset, itemIdx * hashWords, newData, j * hashWords, hashWords);
                 }
             }
             for (int i1 = 0; i1 < mix.length; i1++) {
@@ -180,27 +188,34 @@ public class EthashAlgo {
 
     public Pair<byte[], byte[]> hashimotoLight(long fullSize, final int[] cache, byte[] blockHeaderTruncHash,
                                                byte[]  nonce) {
-        return hashimoto(blockHeaderTruncHash, nonce, fullSize, cache, false);
+        return hashimoto(blockHeaderTruncHash, nonce, fullSize, cache, null, false);
     }
 
-    public Pair<byte[], byte[]> hashimotoFull(long fullSize, final int[] dataset, byte[] blockHeaderTruncHash,
+    public Pair<byte[], byte[]> hashimotoFull(long fullSize, final IntBuffer dataset, byte[] blockHeaderTruncHash,
                                               byte[]  nonce) {
-        return hashimoto(blockHeaderTruncHash, nonce, fullSize, dataset, true);
+        return hashimoto(blockHeaderTruncHash, nonce, fullSize, null, dataset, true);
     }
 
-    public long mine(long fullSize, int[] dataset, byte[] blockHeaderTruncHash, long difficulty) {
+    public long mine(long fullSize, final IntBuffer dataset, byte[] blockHeaderTruncHash, long difficulty) {
         return mine(fullSize, dataset, blockHeaderTruncHash, difficulty, new Random().nextLong());
     }
 
-    public long mine(long fullSize, int[] dataset, byte[] blockHeaderTruncHash, long difficulty, long startNonce) {
+    public long mine(long fullSize, final IntBuffer dataset, byte[] blockHeaderTruncHash, long difficulty, long startNonce) {
         long nonce = startNonce;
         BigInteger target = valueOf(2).pow(256).divide(valueOf(difficulty));
+        long start = System.nanoTime();
         while (!Thread.currentThread().isInterrupted()) {
             nonce++;
             Pair<byte[], byte[]> pair = hashimotoFull(fullSize, dataset, blockHeaderTruncHash, longToBytes(nonce));
             BigInteger h = new BigInteger(1, pair.getRight() /* ?? */);
             if (h.compareTo(target) < 0) break;
         }
+
+        long hashes = nonce - startNonce;
+        long calcTimeUsec = (System.nanoTime() - start) / 1000;
+        long hashrate = hashes * 1_000_000 / calcTimeUsec;
+        System.out.println("Hashrate: " + hashrate + " H/s");
+
         return nonce;
     }
 
